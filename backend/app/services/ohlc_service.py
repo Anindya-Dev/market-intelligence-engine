@@ -1,10 +1,14 @@
 import math
 import statistics
 
+import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.models.ohlc import OHLC1m
+from app.strategies.backtester import Backtester, run_moving_average_backtest
+from app.strategies.moving_average import MovingAverageStrategy
+from app.strategies.rsi import RSIStrategy
 
 
 def get_ohlc_data(db: Session, symbol: str | None = None, limit: int = 100) -> list[OHLC1m]:
@@ -126,3 +130,289 @@ def resample_ohlc_dataframe(data: pd.DataFrame, timeframe: str = "1m") -> pd.Dat
 
     resampled = resampled.dropna(subset=["open", "high", "low", "close"]).reset_index()
     return resampled
+
+
+def backtest_ma_grid(
+    db: Session,
+    symbol: str = "BTCUSDT",
+    timeframe: str = "5m",
+    cost: float = 0.001,
+    short_windows: list[int] | None = None,
+    long_windows: list[int] | None = None,
+    top_n: int = 10,
+) -> dict:
+    if short_windows is None:
+        short_windows = [20, 50, 100]
+    if long_windows is None:
+        long_windows = [100, 150, 200, 300]
+
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
+    data = resample_ohlc_dataframe(data=data, timeframe=timeframe)
+
+    results: list[dict] = []
+
+    for short in short_windows:
+        for long in long_windows:
+            if short >= long:
+                continue
+
+            metrics = run_moving_average_backtest(
+                data=data,
+                short_window=short,
+                long_window=long,
+                transaction_cost=cost,
+            )
+
+            results.append(
+                {
+                    "short_window": short,
+                    "long_window": long,
+                    "total_return": metrics["total_return"],
+                    "sharpe_ratio": metrics["sharpe_ratio"],
+                    "max_drawdown": metrics["max_drawdown"],
+                    "win_rate": metrics["win_rate"],
+                    "num_trades": metrics["num_trades"],
+                }
+            )
+
+    sorted_results = sorted(results, key=lambda x: x["sharpe_ratio"], reverse=True)
+    top_results = sorted_results[:top_n]
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "transaction_cost": cost,
+        "tested_combinations": len(results),
+        "results": top_results,
+    }
+
+
+def backtest_ma_walkforward(
+    db: Session,
+    symbol: str = "BTCUSDT",
+    short_window: int = 10,
+    long_window: int = 30,
+    timeframe: str = "1m",
+    cost: float = 0.001,
+) -> dict:
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
+    data = resample_ohlc_dataframe(data=data, timeframe=timeframe)
+
+    if len(data) < long_window:
+        return {
+            "symbol": symbol,
+            "short_window": short_window,
+            "long_window": long_window,
+            "timeframe": timeframe,
+            "transaction_cost": cost,
+            "train_sharpe": 0.0,
+            "train_return": 0.0,
+            "test_sharpe": 0.0,
+            "test_return": 0.0,
+            "test_drawdown": 0.0,
+            "test_trades": 0,
+            "status": "insufficient_data",
+        }
+
+    split_idx = int(len(data) * 0.7)
+    train_df = data.iloc[:split_idx].reset_index(drop=True)
+    test_df = data.iloc[split_idx:].reset_index(drop=True)
+
+    train_metrics = run_moving_average_backtest(
+        data=train_df,
+        short_window=short_window,
+        long_window=long_window,
+        transaction_cost=cost,
+    )
+    test_metrics = run_moving_average_backtest(
+        data=test_df,
+        short_window=short_window,
+        long_window=long_window,
+        transaction_cost=cost,
+    )
+
+    return {
+        "symbol": symbol,
+        "short_window": short_window,
+        "long_window": long_window,
+        "timeframe": timeframe,
+        "transaction_cost": cost,
+        "train_sharpe": train_metrics["sharpe_ratio"],
+        "train_return": train_metrics["total_return"],
+        "test_sharpe": test_metrics["sharpe_ratio"],
+        "test_return": test_metrics["total_return"],
+        "test_drawdown": test_metrics["max_drawdown"],
+        "test_trades": test_metrics["num_trades"],
+    }
+
+
+class _FixedSignalStrategy:
+    def __init__(self, signals: pd.Series) -> None:
+        self._signals = signals
+
+    def generate_signals(self, data: pd.DataFrame) -> pd.Series:
+        return self._signals.reindex(data.index).fillna("hold")
+
+
+def backtest_ma_volfilter(
+    db: Session,
+    symbol: str = "BTCUSDT",
+    short_window: int = 10,
+    long_window: int = 30,
+    timeframe: str = "1m",
+    cost: float = 0.001,
+    vol_window: int = 30,
+) -> dict:
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
+    data = resample_ohlc_dataframe(data=data, timeframe=timeframe)
+
+    min_points = max(long_window, vol_window) + 1
+    if len(data) < min_points:
+        return {
+            "symbol": symbol,
+            "short_window": short_window,
+            "long_window": long_window,
+            "timeframe": timeframe,
+            "transaction_cost": cost,
+            "vol_window": vol_window,
+            "vol_median": None,
+            "total_return": 0.0,
+            "cagr": None,
+            "sharpe_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "win_rate": 0.0,
+            "num_trades": 0,
+            "data_points": len(data),
+            "status": "insufficient_data",
+        }
+
+    df = data.copy().reset_index(drop=True)
+    log_return = np.log(df["close"] / df["close"].shift(1))
+    rolling_vol = log_return.rolling(window=vol_window).std()
+    vol_median = float(rolling_vol.median(skipna=True))
+    vol_filter = rolling_vol > vol_median
+
+    base_strategy = MovingAverageStrategy(short_window=short_window, long_window=long_window)
+    raw_signals = base_strategy.generate_signals(df)
+    filtered_signals = raw_signals.where(vol_filter.fillna(False), "hold")
+
+    strategy = _FixedSignalStrategy(filtered_signals)
+    backtester = Backtester(data=df, transaction_cost=cost)
+    metrics = backtester.run(strategy=strategy, transaction_cost=cost)
+
+    return {
+        "symbol": symbol,
+        "short_window": short_window,
+        "long_window": long_window,
+        "timeframe": timeframe,
+        "transaction_cost": cost,
+        "vol_window": vol_window,
+        "vol_median": vol_median,
+        **metrics,
+    }
+
+
+def backtest_rsi(
+    db: Session,
+    symbol: str = "BTCUSDT",
+    rsi_window: int = 14,
+    lower: float = 30.0,
+    upper: float = 70.0,
+    timeframe: str = "1m",
+    cost: float = 0.001,
+) -> dict:
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
+    data = resample_ohlc_dataframe(data=data, timeframe=timeframe)
+
+    if len(data) < rsi_window + 1:
+        return {
+            "symbol": symbol,
+            "rsi_window": rsi_window,
+            "lower": lower,
+            "upper": upper,
+            "timeframe": timeframe,
+            "transaction_cost": cost,
+            "total_return": 0.0,
+            "cagr": None,
+            "sharpe_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "win_rate": 0.0,
+            "num_trades": 0,
+            "data_points": len(data),
+            "status": "insufficient_data",
+        }
+
+    strategy = RSIStrategy(rsi_window=rsi_window, lower=lower, upper=upper)
+    backtester = Backtester(data=data, transaction_cost=cost)
+    metrics = backtester.run(strategy=strategy, transaction_cost=cost)
+
+    return {
+        "symbol": symbol,
+        "rsi_window": rsi_window,
+        "lower": lower,
+        "upper": upper,
+        "timeframe": timeframe,
+        "transaction_cost": cost,
+        **metrics,
+    }
+
+
+def backtest_rsi_with_trend_filter(
+    db: Session,
+    symbol: str = "BTCUSDT",
+    rsi_window: int = 14,
+    lower: float = 30.0,
+    upper: float = 70.0,
+    timeframe: str = "1m",
+    cost: float = 0.001,
+    trend_ma_window: int = 100,
+    slope_threshold: float = 0.0001,
+) -> dict:
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
+    data = resample_ohlc_dataframe(data=data, timeframe=timeframe)
+
+    min_points = max(rsi_window + 1, trend_ma_window + 1)
+    if len(data) < min_points:
+        return {
+            "symbol": symbol,
+            "rsi_window": rsi_window,
+            "lower": lower,
+            "upper": upper,
+            "timeframe": timeframe,
+            "transaction_cost": cost,
+            "trend_ma_window": trend_ma_window,
+            "slope_threshold": slope_threshold,
+            "total_return": 0.0,
+            "cagr": None,
+            "sharpe_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "win_rate": 0.0,
+            "num_trades": 0,
+            "data_points": len(data),
+            "status": "insufficient_data",
+        }
+
+    df = data.copy().reset_index(drop=True)
+    trend_ma = df["close"].rolling(window=trend_ma_window, min_periods=trend_ma_window).mean()
+    ma_slope = trend_ma.pct_change()
+    ranging_regime = ma_slope.abs() < slope_threshold
+
+    rsi_strategy = RSIStrategy(rsi_window=rsi_window, lower=lower, upper=upper)
+    rsi_signals = rsi_strategy.generate_signals(df)
+    filtered_signals = rsi_signals.where(ranging_regime.fillna(False), "hold")
+
+    strategy = _FixedSignalStrategy(filtered_signals)
+    backtester = Backtester(data=df, transaction_cost=cost)
+    metrics = backtester.run(strategy=strategy, transaction_cost=cost)
+
+    return {
+        "symbol": symbol,
+        "rsi_window": rsi_window,
+        "lower": lower,
+        "upper": upper,
+        "timeframe": timeframe,
+        "transaction_cost": cost,
+        "trend_ma_window": trend_ma_window,
+        "slope_threshold": slope_threshold,
+        **metrics,
+    }

@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
@@ -70,7 +71,7 @@ def fetch_klines_batched(target_candles: int = TARGET_CANDLES) -> list:
 
         oldest_open_time = int(batch[0][0])
         end_time_ms = oldest_open_time - 1
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     # Keep only exact target size and sort oldest -> newest.
     trimmed = all_klines[:target_candles]
@@ -83,8 +84,8 @@ def chunked(items: list, size: int):
         yield items[i : i + size]
 
 
-def seed_historical() -> int:
-    klines = fetch_klines_batched(target_candles=TARGET_CANDLES)
+def seed_historical(target_candles: int = TARGET_CANDLES) -> int:
+    klines = fetch_klines_batched(target_candles=target_candles)
     db = SessionLocal()
     inserted = 0
 
@@ -100,24 +101,29 @@ def seed_historical() -> int:
             )
             existing_timestamps.update(row[0] for row in rows)
 
+        new_rows = []
         for kline in klines:
             ts = open_time_to_dt(int(kline[0]))
             if ts in existing_timestamps:
                 continue
 
-            row = OHLC1m(
-                symbol=SYMBOL,
-                timestamp=ts,
-                open=float(kline[1]),
-                high=float(kline[2]),
-                low=float(kline[3]),
-                close=float(kline[4]),
-                volume=float(kline[5]),
+            new_rows.append(
+                OHLC1m(
+                    symbol=SYMBOL,
+                    timestamp=ts,
+                    open=float(kline[1]),
+                    high=float(kline[2]),
+                    low=float(kline[3]),
+                    close=float(kline[4]),
+                    volume=float(kline[5]),
+                )
             )
-            db.add(row)
-            inserted += 1
 
-        db.commit()
+        for rows_chunk in chunked(new_rows, 5_000):
+            db.add_all(rows_chunk)
+            db.commit()
+            inserted += len(rows_chunk)
+
         return inserted
     except Exception:
         db.rollback()
@@ -127,5 +133,23 @@ def seed_historical() -> int:
 
 
 if __name__ == "__main__":
-    inserted_rows = seed_historical()
+    parser = argparse.ArgumentParser(description="Seed Binance BTCUSDT 1m historical candles")
+    parser.add_argument("--candles", type=int, default=None, help="Number of 1m candles to fetch (overrides --days)")
+    parser.add_argument("--days", type=int, default=None, help="Number of days of 1m data to fetch")
+    args = parser.parse_args()
+
+    if args.candles is not None and args.candles <= 0:
+        raise ValueError("--candles must be > 0")
+    if args.days is not None and args.days <= 0:
+        raise ValueError("--days must be > 0")
+
+    if args.candles is not None:
+        target = args.candles
+    elif args.days is not None:
+        target = args.days * 24 * 60
+    else:
+        target = TARGET_CANDLES
+
+    inserted_rows = seed_historical(target_candles=target)
+    print(f"Target candles: {target}")
     print(f"Inserted rows: {inserted_rows}")
