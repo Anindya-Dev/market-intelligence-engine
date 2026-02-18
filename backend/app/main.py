@@ -17,6 +17,7 @@ from app.services.ohlc_service import (
     backtest_ma_grid,
     compute_ma_signal,
     compute_volatility,
+    feature_analysis,
     get_ohlc_data,
     get_ohlc_dataframe,
     resample_ohlc_dataframe,
@@ -383,4 +384,27 @@ def backtest_rsi_with_trend_filter_endpoint(
         cost=cost,
         trend_ma_window=100,
         slope_threshold=slope_threshold,
+    )
+
+
+@app.get("/feature-analysis")
+def feature_analysis_endpoint(
+    timeframe: str = Query(default="5m"),
+    forward_bars: int = Query(default=1, ge=1),
+    db: Session = Depends(get_db),
+) -> dict:
+    if timeframe not in {"1m", "5m"}:
+        return {
+            "symbol": "BTCUSDT",
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "status": "invalid_parameters",
+            "message": "timeframe must be '1m' or '5m'",
+        }
+
+    return feature_analysis(
+        db=db,
+        symbol="BTCUSDT",
+        timeframe=timeframe,
+        forward_bars=forward_bars,
     )

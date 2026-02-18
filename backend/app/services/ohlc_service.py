@@ -416,3 +416,86 @@ def backtest_rsi_with_trend_filter(
         "slope_threshold": slope_threshold,
         **metrics,
     }
+
+
+def feature_analysis(
+    db: Session,
+    symbol: str = "BTCUSDT",
+    timeframe: str = "5m",
+    forward_bars: int = 1,
+) -> dict:
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
+    data = resample_ohlc_dataframe(data=data, timeframe=timeframe)
+
+    if data.empty:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "num_samples": 0,
+            "correlations": {
+                "ma_spread": None,
+                "rsi": None,
+                "rolling_volatility": None,
+                "momentum_10": None,
+                "volume_change": None,
+                "atr": None,
+            },
+            "status": "insufficient_data",
+        }
+
+    df = data.copy().reset_index(drop=True)
+
+    df["forward_return"] = (df["close"].shift(-forward_bars) / df["close"]) - 1
+
+    short_ma = df["close"].rolling(window=50, min_periods=50).mean()
+    long_ma = df["close"].rolling(window=150, min_periods=150).mean()
+    df["ma_spread"] = short_ma - long_ma
+
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=14, min_periods=14).mean()
+    avg_loss = loss.rolling(window=14, min_periods=14).mean()
+    rs = avg_gain / avg_loss.replace(0, pd.NA)
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    log_ret = np.log(df["close"] / df["close"].shift(1))
+    df["rolling_volatility"] = log_ret.rolling(window=30, min_periods=30).std()
+    df["momentum_10"] = df["close"].pct_change(periods=10)
+    df["volume_change"] = df["volume"].pct_change()
+
+    prev_close = df["close"].shift(1)
+    tr_components = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - prev_close).abs(),
+            (df["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    )
+    true_range = tr_components.max(axis=1)
+    df["atr"] = true_range.rolling(window=14, min_periods=14).mean()
+
+    feature_cols = [
+        "ma_spread",
+        "rsi",
+        "rolling_volatility",
+        "momentum_10",
+        "volume_change",
+        "atr",
+    ]
+    analysis_df = df[["forward_return", *feature_cols]].dropna().copy()
+
+    correlations = {
+        col: (float(analysis_df["forward_return"].corr(analysis_df[col])) if len(analysis_df) > 1 else None)
+        for col in feature_cols
+    }
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "forward_bars": forward_bars,
+        "num_samples": int(len(analysis_df)),
+        "correlations": correlations,
+    }
