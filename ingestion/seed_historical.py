@@ -34,14 +34,14 @@ from app.models.ohlc import OHLC1m
 
 
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
-SYMBOL = "BTCUSDT"
+DEFAULT_SYMBOL = "BTCUSDT"
 INTERVAL = "1m"
 TARGET_CANDLES = 20_000
 BATCH_LIMIT = 1_000
 
 
-def fetch_klines_batch(limit: int, end_time_ms: int | None = None) -> list:
-    query_params = {"symbol": SYMBOL, "interval": INTERVAL, "limit": limit}
+def fetch_klines_batch(symbol: str, limit: int, end_time_ms: int | None = None) -> list:
+    query_params = {"symbol": symbol, "interval": INTERVAL, "limit": limit}
     if end_time_ms is not None:
         query_params["endTime"] = end_time_ms
 
@@ -55,14 +55,14 @@ def open_time_to_dt(open_time_ms: int) -> datetime:
     return datetime.fromtimestamp(open_time_ms / 1000, tz=timezone.utc).replace(tzinfo=None)
 
 
-def fetch_klines_batched(target_candles: int = TARGET_CANDLES) -> list:
+def fetch_klines_batched(symbol: str, target_candles: int = TARGET_CANDLES) -> list:
     all_klines = []
     end_time_ms = None
 
     while len(all_klines) < target_candles:
         remaining = target_candles - len(all_klines)
         batch_size = min(BATCH_LIMIT, remaining)
-        batch = fetch_klines_batch(limit=batch_size, end_time_ms=end_time_ms)
+        batch = fetch_klines_batch(symbol=symbol, limit=batch_size, end_time_ms=end_time_ms)
 
         if not batch:
             break
@@ -84,8 +84,9 @@ def chunked(items: list, size: int):
         yield items[i : i + size]
 
 
-def seed_historical(target_candles: int = TARGET_CANDLES) -> int:
-    klines = fetch_klines_batched(target_candles=target_candles)
+def seed_historical(symbol: str = DEFAULT_SYMBOL, target_candles: int = TARGET_CANDLES) -> int:
+    symbol = symbol.upper()
+    klines = fetch_klines_batched(symbol=symbol, target_candles=target_candles)
     db = SessionLocal()
     inserted = 0
 
@@ -96,7 +97,7 @@ def seed_historical(target_candles: int = TARGET_CANDLES) -> int:
         for ts_chunk in chunked(timestamps, 5_000):
             rows = (
                 db.query(OHLC1m.timestamp)
-                .filter(OHLC1m.symbol == SYMBOL, OHLC1m.timestamp.in_(ts_chunk))
+                .filter(OHLC1m.symbol == symbol, OHLC1m.timestamp.in_(ts_chunk))
                 .all()
             )
             existing_timestamps.update(row[0] for row in rows)
@@ -109,7 +110,7 @@ def seed_historical(target_candles: int = TARGET_CANDLES) -> int:
 
             new_rows.append(
                 OHLC1m(
-                    symbol=SYMBOL,
+                    symbol=symbol,
                     timestamp=ts,
                     open=float(kline[1]),
                     high=float(kline[2]),
@@ -133,9 +134,10 @@ def seed_historical(target_candles: int = TARGET_CANDLES) -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Seed Binance BTCUSDT 1m historical candles")
+    parser = argparse.ArgumentParser(description="Seed Binance symbol 1m historical candles")
     parser.add_argument("--candles", type=int, default=None, help="Number of 1m candles to fetch (overrides --days)")
     parser.add_argument("--days", type=int, default=None, help="Number of days of 1m data to fetch")
+    parser.add_argument("--symbol", type=str, default=DEFAULT_SYMBOL, help="Trading pair symbol, e.g. BTCUSDT or SOLUSDT")
     args = parser.parse_args()
 
     if args.candles is not None and args.candles <= 0:
@@ -150,6 +152,7 @@ if __name__ == "__main__":
     else:
         target = TARGET_CANDLES
 
-    inserted_rows = seed_historical(target_candles=target)
+    inserted_rows = seed_historical(symbol=args.symbol, target_candles=target)
+    print(f"Symbol: {args.symbol.upper()}")
     print(f"Target candles: {target}")
     print(f"Inserted rows: {inserted_rows}")

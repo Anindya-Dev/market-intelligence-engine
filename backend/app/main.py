@@ -3,6 +3,7 @@
 import json
 
 from fastapi import Depends, FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app.api.schemas import OHLCCreate, OHLCRead
@@ -17,6 +18,10 @@ from app.services.ohlc_service import (
     backtest_ma_grid,
     compute_ma_signal,
     compute_volatility,
+    direction_ann_analysis,
+    direction_long_only_eval,
+    direction_threshold_backtest,
+    direction_analysis,
     feature_analysis,
     get_ohlc_data,
     get_ohlc_dataframe,
@@ -26,6 +31,14 @@ from app.services.redis_client import get_value, set_value
 from app.strategies.backtester import run_moving_average_backtest
 
 app = FastAPI(title=settings.APP_NAME)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
@@ -89,23 +102,29 @@ def last_candle() -> dict:
 
 
 @app.get("/volatility")
-def volatility(db: Session = Depends(get_db)) -> dict:
+def volatility(
+    symbol: str = Query(default="BTCUSDT"),
+    db: Session = Depends(get_db),
+) -> dict:
     window = 30
-    value = compute_volatility(db=db, symbol="BTCUSDT", window=window)
+    value = compute_volatility(db=db, symbol=symbol, window=window)
 
     if value is None:
-        return {"symbol": "BTCUSDT", "volatility": None, "window": window, "status": "insufficient_data"}
+        return {"symbol": symbol, "volatility": None, "window": window, "status": "insufficient_data"}
 
-    return {"symbol": "BTCUSDT", "volatility": value, "window": window}
+    return {"symbol": symbol, "volatility": value, "window": window}
 
 
 @app.get("/ma-signal")
-def ma_signal(db: Session = Depends(get_db)) -> dict:
-    result = compute_ma_signal(db=db, symbol="BTCUSDT", fetch_window=50, short_window=10, long_window=30)
+def ma_signal(
+    symbol: str = Query(default="BTCUSDT"),
+    db: Session = Depends(get_db),
+) -> dict:
+    result = compute_ma_signal(db=db, symbol=symbol, fetch_window=50, short_window=10, long_window=30)
 
     if result is None:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "short_ma": None,
             "long_ma": None,
             "signal": "hold",
@@ -113,7 +132,7 @@ def ma_signal(db: Session = Depends(get_db)) -> dict:
         }
 
     return {
-        "symbol": "BTCUSDT",
+        "symbol": symbol,
         "short_ma": result["short_ma"],
         "long_ma": result["long_ma"],
         "signal": result["signal"],
@@ -122,6 +141,7 @@ def ma_signal(db: Session = Depends(get_db)) -> dict:
 
 @app.get("/backtest/ma")
 def backtest_ma(
+    symbol: str = Query(default="BTCUSDT"),
     short: int = Query(default=10, ge=1),
     long: int = Query(default=30, ge=2),
     cost: float = Query(default=0.001, ge=0.0),
@@ -130,7 +150,7 @@ def backtest_ma(
 ) -> dict:
     if short >= long:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "short_window": short,
             "long_window": long,
             "transaction_cost": cost,
@@ -138,11 +158,11 @@ def backtest_ma(
             "message": "short must be less than long",
         }
 
-    data = get_ohlc_dataframe(db=db, symbol="BTCUSDT")
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
 
     if timeframe not in {"1m", "5m"}:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "short_window": short,
             "long_window": long,
             "transaction_cost": cost,
@@ -155,7 +175,7 @@ def backtest_ma(
 
     if len(data) < 30:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "total_return": 0.0,
             "cagr": 0.0,
             "sharpe_ratio": 0.0,
@@ -175,7 +195,7 @@ def backtest_ma(
         transaction_cost=cost,
     )
     return {
-        "symbol": "BTCUSDT",
+        "symbol": symbol,
         "short_window": short,
         "long_window": long,
         "transaction_cost": cost,
@@ -186,13 +206,14 @@ def backtest_ma(
 
 @app.get("/backtest/ma-grid")
 def backtest_ma_grid_endpoint(
+    symbol: str = Query(default="BTCUSDT"),
     timeframe: str = Query(default="5m"),
     cost: float = Query(default=0.001, ge=0.0),
     db: Session = Depends(get_db),
 ) -> dict:
     if timeframe not in {"1m", "5m"}:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "timeframe": timeframe,
             "transaction_cost": cost,
             "status": "invalid_parameters",
@@ -201,7 +222,7 @@ def backtest_ma_grid_endpoint(
 
     return backtest_ma_grid(
         db=db,
-        symbol="BTCUSDT",
+        symbol=symbol,
         timeframe=timeframe,
         cost=cost,
         short_windows=[20, 50, 100],
@@ -212,6 +233,7 @@ def backtest_ma_grid_endpoint(
 
 @app.get("/backtest/ma-walkforward")
 def backtest_ma_walkforward_endpoint(
+    symbol: str = Query(default="BTCUSDT"),
     short: int = Query(default=10, ge=1),
     long: int = Query(default=30, ge=2),
     timeframe: str = Query(default="1m"),
@@ -220,7 +242,7 @@ def backtest_ma_walkforward_endpoint(
 ) -> dict:
     if short >= long:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "short_window": short,
             "long_window": long,
             "timeframe": timeframe,
@@ -231,7 +253,7 @@ def backtest_ma_walkforward_endpoint(
 
     if timeframe not in {"1m", "5m"}:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "short_window": short,
             "long_window": long,
             "timeframe": timeframe,
@@ -242,7 +264,7 @@ def backtest_ma_walkforward_endpoint(
 
     return backtest_ma_walkforward(
         db=db,
-        symbol="BTCUSDT",
+        symbol=symbol,
         short_window=short,
         long_window=long,
         timeframe=timeframe,
@@ -252,6 +274,7 @@ def backtest_ma_walkforward_endpoint(
 
 @app.get("/backtest/ma-volfilter")
 def backtest_ma_volfilter_endpoint(
+    symbol: str = Query(default="BTCUSDT"),
     short: int = Query(default=10, ge=1),
     long: int = Query(default=30, ge=2),
     timeframe: str = Query(default="1m"),
@@ -261,7 +284,7 @@ def backtest_ma_volfilter_endpoint(
 ) -> dict:
     if short >= long:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "short_window": short,
             "long_window": long,
             "timeframe": timeframe,
@@ -273,7 +296,7 @@ def backtest_ma_volfilter_endpoint(
 
     if timeframe not in {"1m", "5m"}:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "short_window": short,
             "long_window": long,
             "timeframe": timeframe,
@@ -285,7 +308,7 @@ def backtest_ma_volfilter_endpoint(
 
     return backtest_ma_volfilter(
         db=db,
-        symbol="BTCUSDT",
+        symbol=symbol,
         short_window=short,
         long_window=long,
         timeframe=timeframe,
@@ -296,6 +319,7 @@ def backtest_ma_volfilter_endpoint(
 
 @app.get("/backtest/rsi")
 def backtest_rsi_endpoint(
+    symbol: str = Query(default="BTCUSDT"),
     rsi_window: int = Query(default=14, ge=2),
     lower: float = Query(default=30.0),
     upper: float = Query(default=70.0),
@@ -305,7 +329,7 @@ def backtest_rsi_endpoint(
 ) -> dict:
     if lower >= upper:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "rsi_window": rsi_window,
             "lower": lower,
             "upper": upper,
@@ -317,7 +341,7 @@ def backtest_rsi_endpoint(
 
     if timeframe not in {"1m", "5m"}:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "rsi_window": rsi_window,
             "lower": lower,
             "upper": upper,
@@ -329,7 +353,7 @@ def backtest_rsi_endpoint(
 
     return backtest_rsi(
         db=db,
-        symbol="BTCUSDT",
+        symbol=symbol,
         rsi_window=rsi_window,
         lower=lower,
         upper=upper,
@@ -340,6 +364,7 @@ def backtest_rsi_endpoint(
 
 @app.get("/backtest/rsi-with-trend-filter")
 def backtest_rsi_with_trend_filter_endpoint(
+    symbol: str = Query(default="BTCUSDT"),
     rsi_window: int = Query(default=14, ge=2),
     lower: float = Query(default=30.0),
     upper: float = Query(default=70.0),
@@ -350,7 +375,7 @@ def backtest_rsi_with_trend_filter_endpoint(
 ) -> dict:
     if lower >= upper:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "rsi_window": rsi_window,
             "lower": lower,
             "upper": upper,
@@ -363,7 +388,7 @@ def backtest_rsi_with_trend_filter_endpoint(
 
     if timeframe not in {"1m", "5m"}:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "rsi_window": rsi_window,
             "lower": lower,
             "upper": upper,
@@ -376,7 +401,7 @@ def backtest_rsi_with_trend_filter_endpoint(
 
     return backtest_rsi_with_trend_filter(
         db=db,
-        symbol="BTCUSDT",
+        symbol=symbol,
         rsi_window=rsi_window,
         lower=lower,
         upper=upper,
@@ -389,13 +414,14 @@ def backtest_rsi_with_trend_filter_endpoint(
 
 @app.get("/feature-analysis")
 def feature_analysis_endpoint(
+    symbol: str = Query(default="BTCUSDT"),
     timeframe: str = Query(default="5m"),
     forward_bars: int = Query(default=1, ge=1),
     db: Session = Depends(get_db),
 ) -> dict:
     if timeframe not in {"1m", "5m"}:
         return {
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "timeframe": timeframe,
             "forward_bars": forward_bars,
             "status": "invalid_parameters",
@@ -404,7 +430,112 @@ def feature_analysis_endpoint(
 
     return feature_analysis(
         db=db,
-        symbol="BTCUSDT",
+        symbol=symbol,
+        timeframe=timeframe,
+        forward_bars=forward_bars,
+    )
+
+
+@app.get("/direction-analysis")
+def direction_analysis_endpoint(
+    symbol: str = Query(default="BTCUSDT"),
+    timeframe: str = Query(default="5m"),
+    forward_bars: int = Query(default=1, ge=1),
+    db: Session = Depends(get_db),
+) -> dict:
+    if timeframe not in {"1m", "5m", "15m", "30m", "1h"}:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "status": "invalid_parameters",
+            "message": "timeframe must be '1m', '5m', '15m', '30m', or '1h'",
+        }
+
+    return direction_analysis(
+        db=db,
+        symbol=symbol,
+        timeframe=timeframe,
+        forward_bars=forward_bars,
+    )
+
+
+@app.get("/direction-threshold-backtest")
+def direction_threshold_backtest_endpoint(
+    symbol: str = Query(default="BTCUSDT"),
+    timeframe: str = Query(default="5m"),
+    forward_bars: int = Query(default=1, ge=1),
+    probability_threshold: float = Query(default=0.55, gt=0.5, lt=1.0),
+    db: Session = Depends(get_db),
+) -> dict:
+    if timeframe not in {"1m", "5m"}:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "probability_threshold": probability_threshold,
+            "status": "invalid_parameters",
+            "message": "timeframe must be '1m' or '5m'",
+        }
+
+    return direction_threshold_backtest(
+        db=db,
+        symbol=symbol,
+        timeframe=timeframe,
+        forward_bars=forward_bars,
+        probability_threshold=probability_threshold,
+    )
+
+
+@app.get("/direction-long-only-eval")
+def direction_long_only_eval_endpoint(
+    symbol: str = Query(default="BTCUSDT"),
+    timeframe: str = Query(default="5m"),
+    forward_bars: int = Query(default=3, ge=1),
+    probability_threshold: float = Query(default=0.55, gt=0.5, lt=1.0),
+    transaction_cost: float = Query(default=0.001, ge=0.0),
+    db: Session = Depends(get_db),
+) -> dict:
+    if timeframe not in {"1m", "5m"}:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "probability_threshold": probability_threshold,
+            "transaction_cost": transaction_cost,
+            "status": "invalid_parameters",
+            "message": "timeframe must be '1m' or '5m'",
+        }
+
+    return direction_long_only_eval(
+        db=db,
+        symbol=symbol,
+        timeframe=timeframe,
+        forward_bars=forward_bars,
+        probability_threshold=probability_threshold,
+        transaction_cost=transaction_cost,
+    )
+
+
+@app.get("/direction-ann-analysis")
+def direction_ann_analysis_endpoint(
+    symbol: str = Query(default="BTCUSDT"),
+    timeframe: str = Query(default="5m"),
+    forward_bars: int = Query(default=3, ge=1),
+    db: Session = Depends(get_db),
+) -> dict:
+    if timeframe not in {"1m", "5m"}:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "status": "invalid_parameters",
+            "message": "timeframe must be '1m' or '5m'",
+        }
+
+    return direction_ann_analysis(
+        db=db,
+        symbol=symbol,
         timeframe=timeframe,
         forward_bars=forward_bars,
     )

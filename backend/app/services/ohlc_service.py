@@ -3,6 +3,10 @@ import statistics
 
 import numpy as np
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import StandardScaler
 from sqlalchemy.orm import Session
 
 from app.models.ohlc import OHLC1m
@@ -108,8 +112,15 @@ def resample_ohlc_dataframe(data: pd.DataFrame, timeframe: str = "1m") -> pd.Dat
     if timeframe == "1m":
         return data
 
-    if timeframe != "5m":
-        raise ValueError("Unsupported timeframe. Use '1m' or '5m'.")
+    timeframe_to_rule = {
+        "5m": "5min",
+        "15m": "15min",
+        "30m": "30min",
+        "1h": "1h",
+    }
+
+    if timeframe not in timeframe_to_rule:
+        raise ValueError("Unsupported timeframe. Use '1m', '5m', '15m', '30m', or '1h'.")
 
     if data.empty:
         return data
@@ -118,7 +129,7 @@ def resample_ohlc_dataframe(data: pd.DataFrame, timeframe: str = "1m") -> pd.Dat
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.set_index("timestamp")
 
-    resampled = df.resample("5min").agg(
+    resampled = df.resample(timeframe_to_rule[timeframe]).agg(
         {
             "open": "first",
             "high": "max",
@@ -418,6 +429,67 @@ def backtest_rsi_with_trend_filter(
     }
 
 
+def _build_feature_frame(data: pd.DataFrame, forward_bars: int) -> pd.DataFrame:
+    df = data.copy().reset_index(drop=True)
+
+    df["forward_return"] = (df["close"].shift(-forward_bars) / df["close"]) - 1
+
+    short_ma = df["close"].rolling(window=50, min_periods=50).mean()
+    long_ma = df["close"].rolling(window=150, min_periods=150).mean()
+    df["ma_spread"] = short_ma - long_ma
+
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=14, min_periods=14).mean()
+    avg_loss = loss.rolling(window=14, min_periods=14).mean()
+    rs = avg_gain / avg_loss.replace(0, pd.NA)
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    log_ret = np.log(df["close"] / df["close"].shift(1))
+    df["rolling_volatility"] = log_ret.rolling(window=30, min_periods=30).std()
+    df["momentum_10"] = df["close"].pct_change(periods=10)
+    df["volume_change"] = df["volume"].pct_change()
+
+    df["momentum_1"] = df["close"].pct_change(periods=1)
+    df["momentum_3"] = df["close"].pct_change(periods=3)
+    df["momentum_6"] = df["close"].pct_change(periods=6)
+
+    prev_close = df["close"].shift(1)
+    tr_components = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - prev_close).abs(),
+            (df["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    )
+    true_range = tr_components.max(axis=1)
+    df["atr"] = true_range.rolling(window=14, min_periods=14).mean()
+
+    df["trend_strength"] = (df["ma_spread"].abs() / df["close"].replace(0, np.nan))
+    df["trend_strength_rolling_median"] = df["trend_strength"].rolling(window=100, min_periods=100).median()
+    df["strong_trend_flag"] = (df["trend_strength"] > df["trend_strength_rolling_median"]).astype(int)
+
+    vol_mean = df["rolling_volatility"].rolling(window=100, min_periods=100).mean()
+    vol_std = df["rolling_volatility"].rolling(window=100, min_periods=100).std().replace(0, np.nan)
+    df["vol_zscore"] = (df["rolling_volatility"] - vol_mean) / vol_std
+
+    df["rsi_vol_interaction"] = df["rsi"] * df["rolling_volatility"]
+    df["mom_trend_interaction"] = df["momentum_10"] * df["trend_strength"]
+    df["vol_change_5"] = df["rolling_volatility"] - df["rolling_volatility"].shift(5)
+
+    candle_range = (df["high"] - df["low"]).replace(0, np.nan)
+    df["candle_body_ratio"] = (df["close"] - df["open"]).abs() / candle_range
+
+    volume_mean = df["volume"].rolling(window=100, min_periods=100).mean()
+    volume_std = df["volume"].rolling(window=100, min_periods=100).std().replace(0, np.nan)
+    df["volume_zscore"] = (df["volume"] - volume_mean) / volume_std
+
+    df = df.replace([np.inf, -np.inf], np.nan)
+    return df.dropna().copy()
+
+
 def feature_analysis(
     db: Session,
     symbol: str = "BTCUSDT",
@@ -444,48 +516,8 @@ def feature_analysis(
             "status": "insufficient_data",
         }
 
-    df = data.copy().reset_index(drop=True)
-
-    df["forward_return"] = (df["close"].shift(-forward_bars) / df["close"]) - 1
-
-    short_ma = df["close"].rolling(window=50, min_periods=50).mean()
-    long_ma = df["close"].rolling(window=150, min_periods=150).mean()
-    df["ma_spread"] = short_ma - long_ma
-
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=14, min_periods=14).mean()
-    avg_loss = loss.rolling(window=14, min_periods=14).mean()
-    rs = avg_gain / avg_loss.replace(0, pd.NA)
-    df["rsi"] = 100 - (100 / (1 + rs))
-
-    log_ret = np.log(df["close"] / df["close"].shift(1))
-    df["rolling_volatility"] = log_ret.rolling(window=30, min_periods=30).std()
-    df["momentum_10"] = df["close"].pct_change(periods=10)
-    df["volume_change"] = df["volume"].pct_change()
-
-    prev_close = df["close"].shift(1)
-    tr_components = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - prev_close).abs(),
-            (df["low"] - prev_close).abs(),
-        ],
-        axis=1,
-    )
-    true_range = tr_components.max(axis=1)
-    df["atr"] = true_range.rolling(window=14, min_periods=14).mean()
-
-    feature_cols = [
-        "ma_spread",
-        "rsi",
-        "rolling_volatility",
-        "momentum_10",
-        "volume_change",
-        "atr",
-    ]
-    analysis_df = df[["forward_return", *feature_cols]].dropna().copy()
+    feature_cols = ["ma_spread", "rsi", "rolling_volatility", "momentum_10", "volume_change", "atr"]
+    analysis_df = _build_feature_frame(data=data, forward_bars=forward_bars)
 
     correlations = {
         col: (float(analysis_df["forward_return"].corr(analysis_df[col])) if len(analysis_df) > 1 else None)
@@ -498,4 +530,384 @@ def feature_analysis(
         "forward_bars": forward_bars,
         "num_samples": int(len(analysis_df)),
         "correlations": correlations,
+    }
+
+
+def direction_analysis(
+    db: Session,
+    symbol: str = "BTCUSDT",
+    timeframe: str = "5m",
+    forward_bars: int = 1,
+) -> dict:
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
+    data = resample_ohlc_dataframe(data=data, timeframe=timeframe)
+
+    feature_cols = ["ma_spread", "rsi", "rolling_volatility", "momentum_10", "volume_change", "atr"]
+    analysis_df = _build_feature_frame(data=data, forward_bars=forward_bars)
+
+    if len(analysis_df) < 10:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "num_samples": int(len(analysis_df)),
+            "class_balance": {"up": None, "down": None},
+            "auc": None,
+            "accuracy": None,
+            "feature_correlations": {k: None for k in feature_cols},
+            "model_coefficients": {k: {"coefficient": None, "relative_importance": None} for k in feature_cols},
+            "status": "insufficient_data",
+        }
+
+    analysis_df["direction"] = (analysis_df["forward_return"] > 0).astype(int)
+
+    class_up = float(analysis_df["direction"].mean())
+    class_down = float(1.0 - class_up)
+
+    feature_correlations = {
+        col: float(analysis_df["direction"].corr(analysis_df[col])) for col in feature_cols
+    }
+
+    split_idx = int(len(analysis_df) * 0.7)
+    train_df = analysis_df.iloc[:split_idx]
+    test_df = analysis_df.iloc[split_idx:]
+
+    if train_df["direction"].nunique() < 2 or test_df["direction"].nunique() < 2:
+        auc = None
+        accuracy = None
+        model_coefficients = {k: {"coefficient": None, "relative_importance": None} for k in feature_cols}
+    else:
+        model = LogisticRegression(max_iter=1000)
+        model.fit(train_df[feature_cols], train_df["direction"])
+
+        prob = model.predict_proba(test_df[feature_cols])[:, 1]
+        pred = (prob >= 0.5).astype(int)
+
+        auc = float(roc_auc_score(test_df["direction"], prob))
+        accuracy = float(accuracy_score(test_df["direction"], pred))
+
+        coefs = model.coef_[0]
+        abs_sum = float(np.abs(coefs).sum())
+        model_coefficients = {}
+        for idx, col in enumerate(feature_cols):
+            coef_val = float(coefs[idx])
+            rel_importance = float(abs(coef_val) / abs_sum) if abs_sum > 0 else 0.0
+            model_coefficients[col] = {
+                "coefficient": coef_val,
+                "relative_importance": rel_importance,
+            }
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "forward_bars": forward_bars,
+        "num_samples": int(len(analysis_df)),
+        "class_balance": {"up": class_up, "down": class_down},
+        "auc": auc,
+        "accuracy": accuracy,
+        "feature_correlations": feature_correlations,
+        "model_coefficients": model_coefficients,
+    }
+
+
+def direction_threshold_backtest(
+    db: Session,
+    symbol: str = "BTCUSDT",
+    timeframe: str = "5m",
+    forward_bars: int = 1,
+    probability_threshold: float = 0.55,
+) -> dict:
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
+    data = resample_ohlc_dataframe(data=data, timeframe=timeframe)
+
+    feature_cols = ["ma_spread", "rsi", "rolling_volatility", "momentum_10", "volume_change", "atr"]
+    analysis_df = _build_feature_frame(data=data, forward_bars=forward_bars)
+
+    if len(analysis_df) < 10:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "probability_threshold": probability_threshold,
+            "num_samples": int(len(analysis_df)),
+            "directional_accuracy": None,
+            "hit_rate": None,
+            "status": "insufficient_data",
+        }
+
+    analysis_df["direction"] = (analysis_df["forward_return"] > 0).astype(int)
+
+    split_idx = int(len(analysis_df) * 0.7)
+    train_df = analysis_df.iloc[:split_idx]
+    test_df = analysis_df.iloc[split_idx:].copy()
+
+    if train_df["direction"].nunique() < 2 or test_df["direction"].nunique() < 2:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "probability_threshold": probability_threshold,
+            "num_samples": int(len(analysis_df)),
+            "directional_accuracy": None,
+            "hit_rate": None,
+            "status": "insufficient_class_variation",
+        }
+
+    model = LogisticRegression(max_iter=1000)
+    model.fit(train_df[feature_cols], train_df["direction"])
+
+    prob_up = model.predict_proba(test_df[feature_cols])[:, 1]
+    test_df["prob_up"] = prob_up
+
+    test_df["signal"] = 0
+    test_df.loc[test_df["prob_up"] > probability_threshold, "signal"] = 1
+    test_df.loc[test_df["prob_up"] < (1.0 - probability_threshold), "signal"] = -1
+
+    active_df = test_df[test_df["signal"] != 0].copy()
+    total_test = int(len(test_df))
+    active_signals = int(len(active_df))
+
+    if active_signals == 0:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "probability_threshold": probability_threshold,
+            "num_samples": int(len(analysis_df)),
+            "test_samples": total_test,
+            "active_signals": 0,
+            "directional_accuracy": 0.0,
+            "hit_rate": 0.0,
+            "avg_return_long": None,
+            "avg_return_short": None,
+            "avg_return_overall": float(test_df["forward_return"].mean()) if total_test > 0 else None,
+            "status": "no_signals",
+        }
+
+    actual_signed = np.where(active_df["direction"] == 1, 1, -1)
+    correct = (active_df["signal"].to_numpy() == actual_signed)
+    correct_count = int(correct.sum())
+
+    hit_rate = float(correct_count / active_signals)
+    directional_accuracy = float(correct_count / total_test)
+
+    long_df = test_df[test_df["signal"] == 1]
+    short_df = test_df[test_df["signal"] == -1]
+
+    avg_return_long = float(long_df["forward_return"].mean()) if len(long_df) > 0 else None
+    avg_return_short = float(short_df["forward_return"].mean()) if len(short_df) > 0 else None
+    avg_return_overall = float(test_df["forward_return"].mean()) if total_test > 0 else None
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "forward_bars": forward_bars,
+        "probability_threshold": probability_threshold,
+        "num_samples": int(len(analysis_df)),
+        "test_samples": total_test,
+        "active_signals": active_signals,
+        "directional_accuracy": directional_accuracy,
+        "hit_rate": hit_rate,
+        "avg_return_long": avg_return_long,
+        "avg_return_short": avg_return_short,
+        "avg_return_overall": avg_return_overall,
+    }
+
+
+def direction_long_only_eval(
+    db: Session,
+    symbol: str = "BTCUSDT",
+    timeframe: str = "5m",
+    forward_bars: int = 3,
+    probability_threshold: float = 0.55,
+    transaction_cost: float = 0.001,
+) -> dict:
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
+    data = resample_ohlc_dataframe(data=data, timeframe=timeframe)
+
+    feature_cols = ["ma_spread", "rsi", "rolling_volatility", "momentum_10", "volume_change", "atr"]
+    analysis_df = _build_feature_frame(data=data, forward_bars=forward_bars)
+
+    if len(analysis_df) < 10:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "probability_threshold": probability_threshold,
+            "transaction_cost": transaction_cost,
+            "num_samples": int(len(analysis_df)),
+            "num_trades": 0,
+            "win_rate": 0.0,
+            "avg_return_per_trade": 0.0,
+            "total_return": 0.0,
+            "expectancy": 0.0,
+            "avg_holding_return_before_cost": 0.0,
+            "status": "insufficient_data",
+        }
+
+    analysis_df["direction"] = (analysis_df["forward_return"] > 0).astype(int)
+
+    split_idx = int(len(analysis_df) * 0.7)
+    train_df = analysis_df.iloc[:split_idx]
+    test_df = analysis_df.iloc[split_idx:].copy()
+
+    if train_df["direction"].nunique() < 2:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "probability_threshold": probability_threshold,
+            "transaction_cost": transaction_cost,
+            "num_samples": int(len(analysis_df)),
+            "num_trades": 0,
+            "win_rate": 0.0,
+            "avg_return_per_trade": 0.0,
+            "total_return": 0.0,
+            "expectancy": 0.0,
+            "avg_holding_return_before_cost": 0.0,
+            "status": "insufficient_class_variation",
+        }
+
+    model = LogisticRegression(max_iter=1000)
+    model.fit(train_df[feature_cols], train_df["direction"])
+
+    prob_up = model.predict_proba(test_df[feature_cols])[:, 1]
+    test_df["prob_up"] = prob_up
+    test_df["long_signal"] = test_df["prob_up"] > probability_threshold
+
+    trades_df = test_df[test_df["long_signal"]].copy()
+    num_trades = int(len(trades_df))
+
+    if num_trades == 0:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "probability_threshold": probability_threshold,
+            "transaction_cost": transaction_cost,
+            "num_samples": int(len(analysis_df)),
+            "num_trades": 0,
+            "win_rate": 0.0,
+            "avg_return_per_trade": 0.0,
+            "total_return": 0.0,
+            "expectancy": 0.0,
+            "avg_holding_return_before_cost": 0.0,
+            "status": "no_long_signals",
+        }
+
+    raw_returns = trades_df["forward_return"].to_numpy(dtype=float)
+    net_returns = raw_returns - (2.0 * transaction_cost)
+
+    wins = net_returns > 0
+    win_rate = float(wins.mean())
+    avg_return_per_trade = float(net_returns.mean())
+    total_return = float(np.prod(1.0 + net_returns) - 1.0)
+    avg_holding_return_before_cost = float(raw_returns.mean())
+
+    if wins.any():
+        avg_win = float(net_returns[wins].mean())
+    else:
+        avg_win = 0.0
+
+    if (~wins).any():
+        avg_loss = float(net_returns[~wins].mean())
+    else:
+        avg_loss = 0.0
+
+    expectancy = float((win_rate * avg_win) + ((1.0 - win_rate) * avg_loss))
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "forward_bars": forward_bars,
+        "probability_threshold": probability_threshold,
+        "transaction_cost": transaction_cost,
+        "num_samples": int(len(analysis_df)),
+        "num_trades": num_trades,
+        "win_rate": win_rate,
+        "avg_return_per_trade": avg_return_per_trade,
+        "total_return": total_return,
+        "expectancy": expectancy,
+        "avg_holding_return_before_cost": avg_holding_return_before_cost,
+    }
+
+
+def direction_ann_analysis(
+    db: Session,
+    symbol: str = "BTCUSDT",
+    timeframe: str = "5m",
+    forward_bars: int = 3,
+) -> dict:
+    data = get_ohlc_dataframe(db=db, symbol=symbol)
+    data = resample_ohlc_dataframe(data=data, timeframe=timeframe)
+
+    analysis_df = _build_feature_frame(data=data, forward_bars=forward_bars)
+
+    if len(analysis_df) < 10:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "num_samples": int(len(analysis_df)),
+            "logistic": {"auc": None, "accuracy": None},
+            "ann": {"auc": None, "accuracy": None},
+            "status": "insufficient_data",
+        }
+
+    analysis_df["direction"] = (analysis_df["forward_return"] > 0).astype(int)
+
+    feature_cols = ["ma_spread", "rsi", "rolling_volatility", "momentum_10", "volume_change", "atr"]
+
+    split_idx = int(len(analysis_df) * 0.7)
+    train_df = analysis_df.iloc[:split_idx]
+    test_df = analysis_df.iloc[split_idx:]
+
+    if train_df["direction"].nunique() < 2 or test_df["direction"].nunique() < 2:
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "forward_bars": forward_bars,
+            "num_samples": int(len(analysis_df)),
+            "logistic": {"auc": None, "accuracy": None},
+            "ann": {"auc": None, "accuracy": None},
+            "status": "insufficient_class_variation",
+        }
+
+    x_train = train_df[feature_cols]
+    y_train = train_df["direction"]
+    x_test = test_df[feature_cols]
+    y_test = test_df["direction"]
+
+    scaler = StandardScaler()
+    x_train_scaled = scaler.fit_transform(x_train)
+    x_test_scaled = scaler.transform(x_test)
+
+    logistic = LogisticRegression(max_iter=1000)
+    logistic.fit(x_train_scaled, y_train)
+    logistic_prob = logistic.predict_proba(x_test_scaled)[:, 1]
+    logistic_pred = (logistic_prob >= 0.5).astype(int)
+
+    ann = MLPClassifier(
+        hidden_layer_sizes=(16,),
+        activation="relu",
+        max_iter=500,
+        random_state=42,
+    )
+    ann.fit(x_train_scaled, y_train)
+    ann_prob = ann.predict_proba(x_test_scaled)[:, 1]
+    ann_pred = (ann_prob >= 0.5).astype(int)
+
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "forward_bars": forward_bars,
+        "num_samples": int(len(analysis_df)),
+        "logistic": {
+            "auc": float(roc_auc_score(y_test, logistic_prob)),
+            "accuracy": float(accuracy_score(y_test, logistic_pred)),
+        },
+        "ann": {
+            "auc": float(roc_auc_score(y_test, ann_prob)),
+            "accuracy": float(accuracy_score(y_test, ann_pred)),
+        },
     }
