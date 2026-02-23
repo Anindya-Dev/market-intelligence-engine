@@ -15,10 +15,10 @@ export default function DrawdownChart({ data, loading, error }: DrawdownChartPro
     <ChartWrapper loading={loading} error={error} height={220}>
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-          <CartesianGrid stroke="#1f2937" />
+          <CartesianGrid stroke="#e5e7eb" />
           <XAxis dataKey="timestamp" hide />
-          <YAxis tick={{ fill: "#9ca3af", fontSize: 11 }} />
-          <Tooltip contentStyle={{ background: "#111827", border: "1px solid #1f2937" }} />
+          <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} />
+          <Tooltip contentStyle={{ background: "#ffffff", border: "1px solid #d1d5db" }} />
           <Area type="monotone" dataKey="drawdown" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} />
         </AreaChart>
       </ResponsiveContainer>

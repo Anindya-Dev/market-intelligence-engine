@@ -16,25 +16,47 @@ import { ProbabilityPoint } from "@/types/dashboard";
 
 interface ProbabilityChartProps {
   data: ProbabilityPoint[];
+  secondaryData?: ProbabilityPoint[];
   threshold: number;
   loading: boolean;
   error: string | null;
 }
 
-export default function ProbabilityChart({ data, threshold, loading, error }: ProbabilityChartProps) {
+export default function ProbabilityChart({
+  data,
+  secondaryData,
+  threshold,
+  loading,
+  error,
+}: ProbabilityChartProps) {
   const active = data.filter((d) => d.signalActive || d.probability >= threshold);
+
+  const secondaryMap = new Map((secondaryData ?? []).map((d) => [d.timestamp, d.probability]));
+  const merged = data.map((d) => ({
+    ...d,
+    probabilitySecondary: secondaryMap.get(d.timestamp) ?? null,
+  }));
 
   return (
     <ChartWrapper loading={loading} error={error}>
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-          <CartesianGrid stroke="#1f2937" />
-          <XAxis dataKey="timestamp" tick={{ fill: "#9ca3af", fontSize: 11 }} minTickGap={26} />
-          <YAxis domain={[0, 1]} tick={{ fill: "#9ca3af", fontSize: 11 }} />
-          <Tooltip contentStyle={{ background: "#111827", border: "1px solid #1f2937" }} />
+        <LineChart data={merged} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+          <CartesianGrid stroke="#e5e7eb" />
+          <XAxis dataKey="timestamp" tick={{ fill: "#6b7280", fontSize: 11 }} minTickGap={26} />
+          <YAxis domain={[0, 1]} tick={{ fill: "#6b7280", fontSize: 11 }} />
+          <Tooltip contentStyle={{ background: "#ffffff", border: "1px solid #d1d5db" }} />
           <ReferenceLine y={0.5} stroke="#4b5563" strokeDasharray="4 4" />
           <ReferenceLine y={threshold} stroke="#22c55e" strokeDasharray="6 6" />
           <Line type="monotone" dataKey="probability" stroke="#60a5fa" dot={false} strokeWidth={2} />
+          {secondaryData && secondaryData.length > 0 ? (
+            <Line
+              type="monotone"
+              dataKey="probabilitySecondary"
+              stroke="#f59e0b"
+              dot={false}
+              strokeWidth={1.6}
+            />
+          ) : null}
           <Scatter data={active} fill="#22c55e" />
         </LineChart>
       </ResponsiveContainer>

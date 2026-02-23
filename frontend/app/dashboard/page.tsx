@@ -7,7 +7,12 @@ import TopNavBar from "@/components/ui/TopNavBar";
 import PriceChart from "@/components/charts/PriceChart";
 import ProbabilityChart from "@/components/charts/ProbabilityChart";
 import RollingAUCChart from "@/components/charts/RollingAUCChart";
-import { useDashboardData } from "@/lib/hooks";
+import DataHealthPanel from "@/components/terminal/DataHealthPanel";
+import PaperTradingPanel from "@/components/terminal/PaperTradingPanel";
+import PerformanceSummaryCard from "@/components/terminal/PerformanceSummaryCard";
+import RegimePanel from "@/components/terminal/RegimePanel";
+import { computeRegimeState, runLivePaperSimulation } from "@/lib/terminal_analytics";
+import { useBackendHealthPing, useDashboardData, useProbabilitySeries } from "@/lib/hooks";
 import { DashboardQuery, ModelType, SymbolCode, Timeframe } from "@/types/dashboard";
 
 const EquityCurve = lazy(() => import("@/components/charts/EquityCurve"));
@@ -20,14 +25,51 @@ export default function DashboardPage() {
   const [timeframe, setTimeframe] = useState<Timeframe>("5m");
   const [threshold, setThreshold] = useState<number>(0.55);
   const [model, setModel] = useState<ModelType>("logistic");
+  const [paperEnabled, setPaperEnabled] = useState<boolean>(false);
   const [showMA] = useState<boolean>(false);
+  const [telemetry, setTelemetry] = useState<{
+    connected: boolean;
+    latencyMs: number | null;
+    lastUpdateMs: number | null;
+    isStale: boolean;
+  }>({
+    connected: false,
+    latencyMs: null,
+    lastUpdateMs: null,
+    isStale: true,
+  });
 
   const query = useMemo<DashboardQuery>(
     () => ({ symbol, timeframe, threshold, model }),
     [symbol, timeframe, threshold, model],
   );
 
+  const comparisonModel: ModelType = model === "logistic" ? "ann" : "logistic";
+  const comparisonQuery = useMemo<DashboardQuery>(
+    () => ({ symbol, timeframe, threshold, model: comparisonModel }),
+    [symbol, timeframe, threshold, comparisonModel],
+  );
+
   const { data, loading, error, refresh } = useDashboardData(query);
+  const comparisonProbabilities = useProbabilitySeries(comparisonQuery, true);
+  const { healthy: backendHealthy } = useBackendHealthPing(5000);
+
+  const regimeState = useMemo(
+    () => computeRegimeState(data?.priceSeries ?? [], data?.probabilitySeries ?? []),
+    [data?.priceSeries, data?.probabilitySeries],
+  );
+
+  const simulation = useMemo(
+    () =>
+      runLivePaperSimulation(
+        data?.priceSeries ?? [],
+        data?.probabilitySeries ?? [],
+        threshold,
+        timeframe,
+        paperEnabled,
+      ),
+    [data?.priceSeries, data?.probabilitySeries, threshold, timeframe, paperEnabled],
+  );
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-[1600px] p-4 md:p-6">
@@ -54,9 +96,41 @@ export default function DashboardPage() {
             symbol={symbol}
             timeframe={timeframe}
             data={data?.priceSeries ?? []}
+            probabilities={data?.probabilitySeries ?? []}
+            comparisonProbabilities={comparisonProbabilities}
+            threshold={threshold}
             loading={loading}
             error={error}
             showMA={showMA}
+            onTelemetryChange={setTelemetry}
+          />
+        </Card>
+      </div>
+
+      <div className="mb-6 grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <Card title="Regime Intelligence">
+          <RegimePanel state={regimeState} />
+        </Card>
+        <Card title="Data Health">
+          <DataHealthPanel
+            backendHealthy={backendHealthy}
+            connected={telemetry.connected}
+            isStale={telemetry.isStale}
+            latencyMs={telemetry.latencyMs}
+            lastUpdateMs={telemetry.lastUpdateMs}
+          />
+        </Card>
+        <Card title="Paper Trading">
+          <PaperTradingPanel enabled={paperEnabled} onEnabledChange={setPaperEnabled} simulation={simulation} />
+        </Card>
+      </div>
+
+      <div className="mb-6">
+        <Card title="Performance Summary">
+          <PerformanceSummaryCard
+            sharpe200={simulation.sharpe200}
+            expectancy={simulation.expectancy}
+            winRate={simulation.winRate}
           />
         </Card>
       </div>
@@ -66,6 +140,7 @@ export default function DashboardPage() {
         <Card title="Predicted Probability">
           <ProbabilityChart
             data={data?.probabilitySeries ?? []}
+            secondaryData={comparisonProbabilities}
             threshold={threshold}
             loading={loading}
             error={error}

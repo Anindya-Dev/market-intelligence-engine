@@ -26,12 +26,12 @@ export default function TopNavBar({
   onRefresh,
 }: TopNavBarProps) {
   return (
-    <div className="sticky top-0 z-20 mb-4 rounded-lg border border-border bg-panel px-4 py-3">
+    <div className="sticky top-0 z-20 mb-4 rounded-lg border border-border bg-panel px-4 py-3 shadow-sm">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
         <label className="flex flex-col gap-1 text-xs text-muted">
           Symbol
           <select
-            className="rounded border border-border bg-bg px-2 py-1 text-sm text-gray-100"
+            className="rounded border border-border bg-white px-2 py-1 text-sm text-gray-900"
             value={symbol}
             onChange={(e) => onSymbolChange(e.target.value as SymbolCode)}
           >
@@ -43,7 +43,7 @@ export default function TopNavBar({
         <label className="flex flex-col gap-1 text-xs text-muted">
           Timeframe
           <select
-            className="rounded border border-border bg-bg px-2 py-1 text-sm text-gray-100"
+            className="rounded border border-border bg-white px-2 py-1 text-sm text-gray-900"
             value={timeframe}
             onChange={(e) => onTimeframeChange(e.target.value as Timeframe)}
           >
@@ -70,7 +70,7 @@ export default function TopNavBar({
         <label className="flex flex-col gap-1 text-xs text-muted">
           Model
           <select
-            className="rounded border border-border bg-bg px-2 py-1 text-sm text-gray-100"
+            className="rounded border border-border bg-white px-2 py-1 text-sm text-gray-900"
             value={model}
             onChange={(e) => onModelChange(e.target.value as ModelType)}
           >
@@ -83,7 +83,7 @@ export default function TopNavBar({
           <button
             type="button"
             onClick={onRefresh}
-            className="w-full rounded border border-border bg-bg px-3 py-2 text-sm text-gray-200 hover:bg-slate-800"
+            className="w-full rounded border border-border bg-white px-3 py-2 text-sm text-gray-900 hover:bg-slate-50"
           >
             Refresh
           </button>

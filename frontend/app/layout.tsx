@@ -10,8 +10,8 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className="dark">
-      <body className="min-h-screen bg-bg text-gray-100 antialiased">{children}</body>
+    <html lang="en">
+      <body className="min-h-screen bg-bg text-gray-900 antialiased">{children}</body>
     </html>
   );
 }

@@ -14,7 +14,7 @@ export default function ChartWrapper({
 }: ChartWrapperProps) {
   if (loading) {
     return (
-      <div className="flex items-center justify-center rounded border border-border bg-bg/40" style={{ height }}>
+      <div className="flex items-center justify-center rounded border border-border bg-slate-50" style={{ height }}>
         <span className="text-xs text-muted">Loading...</span>
       </div>
     );
@@ -22,7 +22,7 @@ export default function ChartWrapper({
 
   if (error) {
     return (
-      <div className="flex items-center justify-center rounded border border-border bg-bg/40" style={{ height }}>
+      <div className="flex items-center justify-center rounded border border-border bg-slate-50" style={{ height }}>
         <span className="text-xs text-bear">{error}</span>
       </div>
     );

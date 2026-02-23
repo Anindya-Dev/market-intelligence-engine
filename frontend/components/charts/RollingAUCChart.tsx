@@ -15,10 +15,10 @@ export default function RollingAUCChart({ data, loading, error }: RollingAUCChar
     <ChartWrapper loading={loading} error={error}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-          <CartesianGrid stroke="#1f2937" />
-          <XAxis dataKey="timestamp" tick={{ fill: "#9ca3af", fontSize: 11 }} minTickGap={26} />
-          <YAxis domain={[0.4, 0.7]} tick={{ fill: "#9ca3af", fontSize: 11 }} />
-          <Tooltip contentStyle={{ background: "#111827", border: "1px solid #1f2937" }} />
+          <CartesianGrid stroke="#e5e7eb" />
+          <XAxis dataKey="timestamp" tick={{ fill: "#6b7280", fontSize: 11 }} minTickGap={26} />
+          <YAxis domain={[0.4, 0.7]} tick={{ fill: "#6b7280", fontSize: 11 }} />
+          <Tooltip contentStyle={{ background: "#ffffff", border: "1px solid #d1d5db" }} />
           <Line type="monotone" dataKey="auc" stroke="#a78bfa" dot={false} strokeWidth={2} />
         </LineChart>
       </ResponsiveContainer>

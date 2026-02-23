@@ -15,10 +15,10 @@ export default function FeatureImportance({ data, loading, error }: FeatureImpor
     <ChartWrapper loading={loading} error={error} height={220}>
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} layout="vertical" margin={{ top: 8, right: 12, left: 22, bottom: 0 }}>
-          <CartesianGrid stroke="#1f2937" />
-          <XAxis type="number" tick={{ fill: "#9ca3af", fontSize: 11 }} />
-          <YAxis dataKey="feature" type="category" tick={{ fill: "#9ca3af", fontSize: 11 }} width={110} />
-          <Tooltip contentStyle={{ background: "#111827", border: "1px solid #1f2937" }} />
+          <CartesianGrid stroke="#e5e7eb" />
+          <XAxis type="number" tick={{ fill: "#6b7280", fontSize: 11 }} />
+          <YAxis dataKey="feature" type="category" tick={{ fill: "#6b7280", fontSize: 11 }} width={110} />
+          <Tooltip contentStyle={{ background: "#ffffff", border: "1px solid #d1d5db" }} />
           <Bar dataKey="importance" fill="#60a5fa" />
         </BarChart>
       </ResponsiveContainer>

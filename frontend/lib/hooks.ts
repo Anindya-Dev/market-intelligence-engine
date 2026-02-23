@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { fetchDashboardData } from "@/lib/api";
-import { DashboardData, DashboardQuery, PriceWithSignalPoint } from "@/types/dashboard";
+import { fetchBackendHealth, fetchDashboardData, fetchProbabilitySeries } from "@/lib/api";
+import { DashboardData, DashboardQuery, PriceWithSignalPoint, ProbabilityPoint } from "@/types/dashboard";
 
 export interface UseDashboardDataResult {
   data: DashboardData | null;
@@ -60,6 +60,8 @@ interface CandleUpdateMessage {
   type: "candle_update";
   symbol: string;
   timeframe: string;
+  event_time_ms: number;
+  server_time: string;
   candle: {
     timestamp: string;
     open: number;
@@ -70,16 +72,59 @@ interface CandleUpdateMessage {
   };
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isValidCandleShape(candle: CandleUpdateMessage["candle"]): boolean {
+  if (!isFiniteNumber(candle.open) || candle.open <= 0) return false;
+  if (!isFiniteNumber(candle.high) || candle.high <= 0) return false;
+  if (!isFiniteNumber(candle.low) || candle.low <= 0) return false;
+  if (!isFiniteNumber(candle.close) || candle.close <= 0) return false;
+  if (!isFiniteNumber(candle.volume) || candle.volume < 0) return false;
+  if (candle.high < candle.low) return false;
+  if (candle.high < Math.max(candle.open, candle.close)) return false;
+  if (candle.low > Math.min(candle.open, candle.close)) return false;
+  return true;
+}
+
 export function useMarketWebSocket(
   symbol: string,
   timeframe: string,
   initialCandles: PriceWithSignalPoint[],
-): { connected: boolean; candles: PriceWithSignalPoint[] } {
+): {
+  connected: boolean;
+  candles: PriceWithSignalPoint[];
+  latencyMs: number | null;
+  lastUpdateMs: number | null;
+  isStale: boolean;
+} {
   const [connected, setConnected] = useState(false);
   const [candles, setCandles] = useState<PriceWithSignalPoint[]>(initialCandles);
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [lastUpdateMs, setLastUpdateMs] = useState<number | null>(null);
+  const [isStale, setIsStale] = useState<boolean>(false);
 
   useEffect(() => {
-    setCandles(initialCandles);
+    const sanitized = initialCandles.filter((c) =>
+      isValidCandleShape({
+        timestamp: String(c.timestamp),
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+        volume: Number(c.volume),
+      }),
+    );
+
+    if (sanitized.length !== initialCandles.length) {
+      console.warn("[ws] dropped malformed initial candles", {
+        received: initialCandles.length,
+        kept: sanitized.length,
+      });
+    }
+
+    setCandles(sanitized);
   }, [initialCandles]);
 
   useEffect(() => {
@@ -104,6 +149,20 @@ export function useMarketWebSocket(
         try {
           const msg = JSON.parse(event.data) as CandleUpdateMessage;
           if (msg.type !== "candle_update") return;
+
+          console.debug("[ws] incoming candle_update", msg.candle);
+
+          if (!isValidCandleShape(msg.candle)) {
+            console.warn("[ws] ignored candle_update: invalid candle shape", msg.candle);
+            return;
+          }
+
+          const now = Date.now();
+          setLastUpdateMs(now);
+          setIsStale(false);
+          if (typeof msg.event_time_ms === "number") {
+            setLatencyMs(Math.max(0, now - msg.event_time_ms));
+          }
 
           const incoming: PriceWithSignalPoint = {
             timestamp: msg.candle.timestamp,
@@ -167,5 +226,78 @@ export function useMarketWebSocket(
     };
   }, [symbol, timeframe]);
 
-  return { connected, candles };
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!lastUpdateMs) {
+        setIsStale(true);
+        return;
+      }
+      setIsStale(Date.now() - lastUpdateMs > 10_000);
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [lastUpdateMs]);
+
+  return { connected, candles, latencyMs, lastUpdateMs, isStale };
+}
+
+export function useProbabilitySeries(query: DashboardQuery, enabled: boolean): ProbabilityPoint[] {
+  const [series, setSeries] = useState<ProbabilityPoint[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!enabled) {
+      setSeries([]);
+      return;
+    }
+
+    async function load() {
+      try {
+        const data = await fetchProbabilitySeries(query);
+        if (!cancelled) setSeries(data);
+      } catch {
+        if (!cancelled) setSeries([]);
+      }
+    }
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [query, enabled]);
+
+  return series;
+}
+
+export function useBackendHealthPing(intervalMs = 5000): { healthy: boolean; lastCheckedAt: number | null } {
+  const [healthy, setHealthy] = useState(false);
+  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function check() {
+      try {
+        const response = await fetchBackendHealth();
+        if (!cancelled) {
+          setHealthy(response.status === "ok");
+          setLastCheckedAt(Date.now());
+        }
+      } catch {
+        if (!cancelled) {
+          setHealthy(false);
+          setLastCheckedAt(Date.now());
+        }
+      }
+    }
+
+    void check();
+    const timer = setInterval(() => void check(), intervalMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [intervalMs]);
+
+  return { healthy, lastCheckedAt };
 }

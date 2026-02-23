@@ -7,9 +7,9 @@ interface CardProps extends PropsWithChildren {
 
 export default function Card({ title, rightSlot, children }: CardProps) {
   return (
-    <section className="rounded-lg border border-border bg-panel p-4">
+    <section className="rounded-lg border border-border bg-panel p-4 shadow-sm">
       <header className="mb-4 flex items-center justify-between">
-        <h2 className="text-sm font-semibold tracking-wide text-gray-200">{title}</h2>
+        <h2 className="text-sm font-semibold tracking-wide text-gray-900">{title}</h2>
         {rightSlot}
       </header>
       <div>{children}</div>

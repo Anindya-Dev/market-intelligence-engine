@@ -15,10 +15,10 @@ export default function TradeDistribution({ data, loading, error }: TradeDistrib
     <ChartWrapper loading={loading} error={error} height={220}>
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-          <CartesianGrid stroke="#1f2937" />
-          <XAxis dataKey="bucket" tick={{ fill: "#9ca3af", fontSize: 11 }} />
-          <YAxis tick={{ fill: "#9ca3af", fontSize: 11 }} />
-          <Tooltip contentStyle={{ background: "#111827", border: "1px solid #1f2937" }} />
+          <CartesianGrid stroke="#e5e7eb" />
+          <XAxis dataKey="bucket" tick={{ fill: "#6b7280", fontSize: 11 }} />
+          <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} />
+          <Tooltip contentStyle={{ background: "#ffffff", border: "1px solid #d1d5db" }} />
           <Bar dataKey="count" fill="#6b7280" />
         </BarChart>
       </ResponsiveContainer>
